@@ -1,70 +1,100 @@
 /*
- * 手機動作錄製：畫面層（T17）
- * 感測器、聲音、計時與畫面切換。資料規則都在 GyroRecorder（純邏輯）。
- * 不用 innerHTML；localStorage 只當方便用的暫存，壞掉或被清掉也能照常錄。
+ * 手機動作錄製：畫面層（T17，2026-10-31 依 Ray 的回饋重做體驗）
+ * 原則：用俯視動畫示範動作、動的當下有即時活動線、每一步狀態清楚、先試一次、錄完可點格重錄。
+ * 資料規則都在 GyroRecorder（純邏輯）。不用 innerHTML；localStorage 只當方便用的暫存。
+ * 網址加 ?preview=ready|go|ok|retry|practice|summary 可以不開感測器直接看各個畫面（截圖用）。
  */
 (function () {
   "use strict";
   var GR = window.GyroRecorder;
   var STORE = "gyro_rec.session";
-  var RING = 565.5;
+  var SVGNS = "http://www.w3.org/2000/svg";
   var $ = function (id) { return document.getElementById(id); };
 
   var settings = GR.parseSettings(location.search);
-  var grip = "手持橫拿";
+  var MOVE_NAME = { push: "推近", pull: "拉遠", pan_left: "左搖", pan_right: "右搖", still: "拿穩不動" };
+  var MOVE_HINT = { push: "手機往前送", pull: "手機往自己收", pan_left: "原地往左轉", pan_right: "原地往右轉", still: "什麼都不做" };
+  var FEEDBACK = {
+    ok: ["✓ 收到了", "ok"],
+    nomove: ["線幾乎沒跳，好像沒做到動作", "retry"],
+    shaky: ["拿穩的時候有晃到", "retry"],
+    nodata: ["沒收到感測資料", "retry"]
+  };
+  var PRACTICE_ORDER = ["push", "pan_left", "still", "pull", "pan_right"];
+  var TRACE_MAX = 6;
+
+  var grip = "手持";
+  var mode = "idle";        // idle | practice | real
   var session = null;
-  var listening = false;
-  var paused = false;
-  var take = null;          // 正在錄的這一個：{item, t0, samples, cueMs, run}
-  var runId = 0;            // 每次開始一個動作就加一；舊的計時迴圈看到編號變了就自己停
-  var timer = null;         // 唯一的「下一個動作」計時器
+  var practiceNo = 0;
+  var current = null;       // 正在錄的 {item, t0, samples, cueMs, run}
+  var live = [];            // 這一個動作的即時活動量 [{t, e}]
+  var runId = 0, timer = null, listening = false, lastEventAt = 0;
+  var audio = null, wakeLock = null;
 
-  function schedule(fn, ms) {
-    clearTimeout(timer);
-    timer = setTimeout(fn, ms);
-  }
-  function cancelScheduled() { clearTimeout(timer); timer = null; }
-  var lastEventAt = 0;
-  var audio = null;
-  var wakeLock = null;
+  // ================================================================ 俯視示意圖
 
-  // ---------- 感測器 ----------
-  function onMotion(ev) {
-    var now = performance.now();
-    lastEventAt = now;
-    var s = GR.sampleFrom(ev, take ? now - take.t0 : 0);
-    if (take) take.samples.push(s);
-    showBars(s);
+  function svgEl(tag, attrs, parent) {
+    var n = document.createElementNS(SVGNS, tag);
+    Object.keys(attrs).forEach(function (k) { n.setAttribute(k, attrs[k]); });
+    if (parent) parent.appendChild(n);
+    return n;
   }
 
-  function showBars(s) {
-    var acc = s.a ? Math.sqrt(s.a[0] * s.a[0] + s.a[1] * s.a[1] + s.a[2] * s.a[2]) : 0;
-    var rot = s.r ? Math.sqrt(s.r[0] * s.r[0] + s.r[1] * s.r[1] + s.r[2] * s.r[2]) : 0;
-    $("barAcc").style.width = Math.min(100, acc / 6 * 100).toFixed(0) + "%";
-    $("barRot").style.width = Math.min(100, rot / 200 * 100).toFixed(0) + "%";
+  var ARROW = {
+    push: "M166 112 L166 64 M152 78 L166 64 L180 78",
+    pull: "M166 64 L166 112 M152 98 L166 112 L180 98",
+    pan_left: "M157 46 A135 135 0 0 0 43 46 M59 49 L43 46 L51 32",
+    pan_right: "M43 46 A135 135 0 0 1 157 46 M141 49 L157 46 L149 32",
+    still: "M166 68 L166 76 M166 100 L166 108 M146 88 L154 88 M178 88 L186 88"
+  };
+
+  // 從上往下看：下面是人（頭與肩），前面是手機和它拍的方向（扇形），旁邊的箭頭是動作
+  function pictogram(move, animate) {
+    // 取景只框住人、手機與箭頭，小圖也看得清楚
+    var svg = svgEl("svg", { viewBox: "22 22 170 174", class: "pict", "aria-hidden": "true" });
+    svgEl("circle", { cx: 100, cy: 168, r: 74, class: "pict-floor" }, svg);
+    var rig = svgEl("g", {}, svg);
+    var cone = svgEl("path", { d: "M100 100 L70 44 L130 44 Z", class: "pict-cone" }, rig);
+    svgEl("rect", { x: 72, y: 97, width: 56, height: 14, rx: 3, class: "pict-phone" }, rig);
+    svgEl("path", { d: "M64 194 Q100 170 136 194", class: "pict-body" }, svg);
+    svgEl("circle", { cx: 100, cy: 166, r: 18, class: "pict-head" }, svg);
+    svgEl("path", { d: ARROW[move], fill: "none", stroke: "currentColor", "stroke-width": 8, "stroke-linecap": "round", "stroke-linejoin": "round", class: "pict-arrow" }, svg);
+    if (move === "still") svgEl("circle", { cx: 166, cy: 88, r: 9, fill: "none", stroke: "currentColor", "stroke-width": 6 }, svg);
+    if (animate) addMotion(rig, cone, move);
+    return svg;
   }
 
-  function enableSensors() {
-    var needAsk = typeof DeviceMotionEvent !== "undefined" && typeof DeviceMotionEvent.requestPermission === "function";
-    var ask = needAsk ? DeviceMotionEvent.requestPermission() : Promise.resolve("granted");
-    return ask.then(function (state) {
-      if (state !== "granted") throw new Error("denied");
-      if (!listening) { window.addEventListener("devicemotion", onMotion); listening = true; }
-    });
+  function addMotion(rig, cone, move) {
+    var timing = { keyTimes: "0;0.25;0.55;0.8;1", dur: "1.8s", repeatCount: "indefinite" };
+    if (move === "push" || move === "pull") {
+      var d = move === "push" ? -30 : 22;
+      svgEl("animateTransform", Object.assign({ attributeName: "transform", type: "translate", values: "0 0;0 0;0 " + d + ";0 " + d + ";0 0" }, timing), rig);
+    } else if (move === "pan_left" || move === "pan_right") {
+      var deg = move === "pan_left" ? -32 : 32;
+      svgEl("animateTransform", Object.assign({ attributeName: "transform", type: "rotate", values: "0 100 168;0 100 168;" + deg + " 100 168;" + deg + " 100 168;0 100 168" }, timing), rig);
+    } else {
+      svgEl("animate", { attributeName: "opacity", values: "0.35;0.12;0.35", dur: "1.8s", repeatCount: "indefinite" }, cone);
+    }
   }
 
-  function waitForData(ms) {
-    var start = performance.now();
-    return new Promise(function (resolve) {
-      (function check() {
-        if (lastEventAt > start) return resolve(true);
-        if (performance.now() - start > ms) return resolve(false);
-        setTimeout(check, 50);
-      })();
-    });
+  function putPict(box, move, animate) {
+    while (box.firstChild) box.removeChild(box.firstChild);
+    box.appendChild(pictogram(move, animate));
   }
 
-  // ---------- 聲音與螢幕常亮 ----------
+  // ================================================================ 小工具
+
+  function clear(node) { while (node.firstChild) node.removeChild(node.firstChild); }
+  function css(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+  function show(id) { ["start", "run", "summary"].forEach(function (s) { $(s).hidden = s !== id; }); }
+  function schedule(fn, ms) { clearTimeout(timer); timer = setTimeout(fn, ms); }
+  function stopCurrent() { runId++; current = null; clearTimeout(timer); timer = null; }
+
+  function status(id, msg) { $(id).textContent = msg || ""; }
+
+  // ================================================================ 聲音與螢幕常亮
+
   function unlockAudio() {
     try {
       var Ctx = window.AudioContext || window.webkitAudioContext;
@@ -73,229 +103,266 @@
     } catch (e) { audio = null; }
   }
 
-  function beep() {
+  function tone(freq, dur, vol) {
     if (!audio) return;
     try {
-      var o = audio.createOscillator(), g = audio.createGain();
-      o.frequency.value = 880;
-      g.gain.setValueAtTime(0.0001, audio.currentTime);
-      g.gain.exponentialRampToValueAtTime(0.4, audio.currentTime + 0.01);
-      g.gain.exponentialRampToValueAtTime(0.0001, audio.currentTime + 0.15);
+      var o = audio.createOscillator(), g = audio.createGain(), t = audio.currentTime;
+      o.frequency.value = freq;
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(vol, t + 0.01);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
       o.connect(g); g.connect(audio.destination);
-      o.start(); o.stop(audio.currentTime + 0.16);
+      o.start(t); o.stop(t + dur + 0.02);
     } catch (e) { /* 沒聲音也照錄 */ }
   }
+  var sound = {
+    tick: function () { tone(660, 0.06, 0.12); },
+    go: function () { tone(988, 0.18, 0.45); },
+    ok: function () { tone(784, 0.08, 0.2); setTimeout(function () { tone(1046, 0.1, 0.2); }, 90); },
+    retry: function () { tone(330, 0.2, 0.25); }
+  };
 
   function keepAwake() {
     try {
       if (navigator.wakeLock && !wakeLock) navigator.wakeLock.request("screen").then(function (l) { wakeLock = l; l.addEventListener("release", function () { wakeLock = null; }); }).catch(function () {});
     } catch (e) { /* 不支援就算了 */ }
   }
-  document.addEventListener("visibilitychange", function () { if (document.visibilityState === "visible" && session && !GR.progress(session).finished) keepAwake(); });
-
-  // ---------- 暫存 ----------
-  function save() { try { localStorage.setItem(STORE, GR.toJSON(session)); } catch (e) { /* 忽略 */ } }
-  function load() {
-    try {
-      var raw = localStorage.getItem(STORE);
-      if (!raw) return null;
-      var r = GR.fromJSON(raw);
-      return r.ok ? r.session : null;
-    } catch (e) { return null; }
-  }
-  function clearStore() { try { localStorage.removeItem(STORE); } catch (e) { /* 忽略 */ } }
-
-  // ---------- 畫面 ----------
-  function show(id) {
-    ["start", "run", "done"].forEach(function (s) { $(s).hidden = s !== id; });
-  }
-
-  function status(id, msg, kind) {
-    var el = $(id);
-    el.textContent = msg || "";
-    el.className = "status" + (kind ? " " + kind : "");
-  }
-
-  var MOVE_TEXT = {
-    push: "推近：手機往前送", pull: "拉遠：手機往後收",
-    pan_left: "左搖：原地往左轉", pan_right: "右搖：原地往右轉", still: "拿穩不動"
-  };
-
-  function showMove(move) {
-    document.querySelectorAll("#stage .icon").forEach(function (svg) { svg.hidden = svg.getAttribute("data-move") !== move; });
-    setLabel(MOVE_TEXT[move] || "", false);
-  }
-
-  function setLabel(text, go) {
-    var el = $("moveLabel");
-    el.textContent = text;
-    el.className = "move-label" + (go ? " go" : "");
-  }
-
-  function renderDots() {
-    var dots = $("dots");
-    while (dots.firstChild) dots.removeChild(dots.firstChild);
-    var done = {};
-    session.takes.forEach(function (t) { done[t.index] = true; });
-    var next = GR.nextItem(session);
-    session.plan.forEach(function (p) {
-      var d = document.createElement("span");
-      d.className = "dot" + (done[p.index] ? " done" : "") + (next && next.index === p.index ? " now" : "");
-      dots.appendChild(d);
-    });
-    var pr = GR.progress(session);
-    $("runInfo").textContent = pr.done + " / " + pr.total;
-  }
-
-  function setRing(fraction) {
-    $("ring").setAttribute("stroke-dashoffset", (RING * (1 - Math.max(0, Math.min(1, fraction)))).toFixed(1));
-  }
-
-  // ---------- 錄一個動作 ----------
-  function runNext() {
-    cancelScheduled();
-    if (paused) return;
-    var item = GR.nextItem(session);
-    if (!item) return finish();
-    renderDots();
-    showMove(item.move);
-    $("stage").classList.remove("cue");
-    var myRun = ++runId;
-    take = { item: item, t0: performance.now(), samples: [], cueMs: null, run: myRun };
-    var cd = settings.countdownSec * 1000, post = settings.postSec * 1000;
-
-    // 用計時器推進（每 20 毫秒一次），不用 requestAnimationFrame：
-    // 後者在分頁到背景或省電模式時會停或降速，倒數就不準。
-    (function frame() {
-      if (!take || take.run !== myRun || runId !== myRun) return;
-      var el = performance.now() - take.t0;
-      if (el < cd) {
-        setRing(1 - el / cd);
-        $("count").textContent = String(Math.ceil((cd - el) / 1000));
-        return setTimeout(frame, 20);
-      }
-      if (take.cueMs === null) {
-        take.cueMs = el;
-        $("stage").classList.add("cue");
-        $("count").textContent = "";
-        setLabel(item.move === "still" ? "現在拿穩！" : "現在動！", true);
-        setRing(1);
-        beep();
-        // iPhone 不支援震動；其他手機要使用者點過畫面才能震
-        var activated = !navigator.userActivation || navigator.userActivation.hasBeenActive;
-        if (navigator.vibrate && activated) { try { navigator.vibrate(60); } catch (e) { /* 忽略 */ } }
-      }
-      if (el < cd + post) {
-        setRing(1 - (el - cd) / post);
-        return setTimeout(frame, 20);
-      }
-      var done = take;
-      take = null;
-      session = GR.addTake(session, done.item, done.samples, done.cueMs);
-      save();
-      $("stage").classList.remove("cue");
-      renderDots();
-      // 休息時先換成下一個動作的圖示，讓人提早知道接下來做什麼
-      var upcoming = GR.nextItem(session);
-      if (upcoming) { showMove(upcoming.move); setRing(1); $("count").textContent = ""; }
-      schedule(runNext, settings.restSec * 1000);
-    })();
-  }
-
-  function stopCurrent() {
-    runId++;
-    take = null;
-    cancelScheduled();
-  }
-
-  function finish() {
-    stopCurrent();
-    show("done");
-    var noData = session.takes.filter(function (t) { var s = GR.summarizeTake(t); return !s.hasAcc && !s.hasRot; }).length;
-    var rates = session.takes.map(function (t) { return GR.summarizeTake(t).rateHz; }).filter(function (r) { return r > 0; });
-    var avgRate = rates.length ? rates.reduce(function (a, b) { return a + b; }, 0) / rates.length : 0;
-    $("doneTitle").textContent = session.takes.length + " 個動作錄好了";
-    $("doneInfo").textContent = "每秒約 " + Math.round(avgRate) + " 筆感測資料" + (noData ? "，其中 " + noData + " 個沒有資料" : "");
-    $("shareBtn").hidden = !(navigator.canShare && typeof File === "function" && navigator.canShare({ files: [new File(["{}"], "a.json", { type: "application/json" })] }));
-  }
-
-  // ---------- 存檔 ----------
-  function file() {
-    var name = GR.filename(new Date());
-    return { name: name, blob: new Blob([GR.toJSON(session)], { type: "application/json" }) };
-  }
-
-  $("saveBtn").addEventListener("click", function () {
-    var f = file();
-    var a = document.createElement("a");
-    a.href = URL.createObjectURL(f.blob);
-    a.download = f.name;
-    document.body.appendChild(a); a.click(); document.body.removeChild(a);
-    setTimeout(function () { URL.revokeObjectURL(a.href); }, 2000);
-    status("doneStatus", "已存成 " + f.name + "，在「檔案」App 的下載項目裡", "ok");
+  document.addEventListener("visibilitychange", function () {
+    if (document.visibilityState === "visible" && mode !== "idle") keepAwake();
+    if (document.visibilityState === "hidden" && current) pause(); // 切走 App 時，錄到一半的那個不算，回來按繼續
   });
 
-  $("shareBtn").addEventListener("click", function () {
-    var f = file();
-    var fileObj = new File([f.blob], f.name, { type: "application/json" });
-    navigator.share({ files: [fileObj], title: f.name }).then(function () {
-      status("doneStatus", "已分享 " + f.name, "ok");
-    }).catch(function () { /* 使用者取消 */ });
-  });
+  // ================================================================ 感測器
 
-  // ---------- 開始、接續、暫停、重錄 ----------
-  function begin(existing) {
+  function onMotion(ev) {
+    var now = performance.now();
+    lastEventAt = now;
+    if (!current) return;
+    var s = GR.sampleFrom(ev, now - current.t0);
+    current.samples.push(s);
+    live.push({ t: s.t, e: GR.energy(s) });
+  }
+
+  function ensureSensors() {
     unlockAudio();
     status("startStatus", "");
     if (!window.isSecureContext) {
-      status("startStatus", "這個網址不是 https，手機不會給感測資料", "warn");
-      return;
+      status("startStatus", "這個網址不是 https，手機不會給感測資料");
+      return Promise.resolve(false);
     }
-    enableSensors().then(function () {
-      $("liveBars").hidden = false;
-      return waitForData(1500);
+    var needAsk = typeof DeviceMotionEvent !== "undefined" && typeof DeviceMotionEvent.requestPermission === "function";
+    var ask = needAsk ? DeviceMotionEvent.requestPermission() : Promise.resolve("granted");
+    return ask.then(function (state) {
+      if (state !== "granted") throw new Error("denied");
+      if (!listening) { window.addEventListener("devicemotion", onMotion); listening = true; }
+      var start = performance.now();
+      return new Promise(function (resolve) {
+        (function check() {
+          if (lastEventAt > start) return resolve(true);
+          if (performance.now() - start > 1500) return resolve(false);
+          setTimeout(check, 50);
+        })();
+      });
     }).then(function (ok) {
-      if (!ok) { status("startStatus", "收不到感測資料，請用 iPhone 的 Safari 開", "warn"); return; }
-      session = existing || GR.createSession(settings, { device: "", grip: grip, createdAt: new Date().toISOString() });
-      save();
-      keepAwake();
-      paused = false;
-      $("pauseBtn").textContent = "暫停";
-      show("run");
-      runNext();
+      if (!ok) status("startStatus", "收不到感測資料，請用 iPhone 的 Safari 開");
+      else keepAwake();
+      return ok;
     }).catch(function () {
-      status("startStatus", "動作感測被拒絕了。到 設定 > App > Safari > 進階 > 網站資料，刪掉這個網站再重開頁面", "warn");
+      status("startStatus", "動作感測被拒絕了。到 設定 > App > Safari > 進階 > 網站資料，刪掉 github.io 再重開頁面");
+      return false;
     });
   }
 
-  $("startBtn").addEventListener("click", function () { clearStore(); begin(null); });
-  $("resumeBtn").addEventListener("click", function () { begin(load()); });
-  $("againBtn").addEventListener("click", function () { stopCurrent(); clearStore(); session = null; show("start"); $("resumeBtn").hidden = true; });
+  // ================================================================ 錄製頁畫面
 
-  $("pauseBtn").addEventListener("click", function () {
-    if (!paused) {
-      paused = true;
-      stopCurrent();             // 錄到一半的那個不算
-      $("stage").classList.remove("cue");
-      $("count").textContent = "";
-      setRing(0);
-      $("pauseBtn").textContent = "繼續";
-    } else {
-      paused = false;
-      $("pauseBtn").textContent = "暫停";
-      unlockAudio();
-      runNext();
+  function setPhase(phase, item, big) {
+    $("card").setAttribute("data-phase", phase);
+    $("big").textContent = big || "";
+    putPict($("pictBox"), item.move, phase === "ready");
+    $("moveName").textContent = MOVE_NAME[item.move];
+    $("moveHint").textContent = MOVE_HINT[item.move];
+    if (phase === "ready" || phase === "go") {
+      $("feedback").textContent = "";
+      $("feedback").className = "feedback";
+      $("retryActions").hidden = true;
+      $("practiceActions").hidden = true;
     }
+  }
+
+  function setBar(fraction) { $("bar").style.width = (Math.max(0, Math.min(1, fraction)) * 100).toFixed(1) + "%"; }
+
+  function drawTrace() {
+    var c = $("trace");
+    var w = c.clientWidth, h = c.clientHeight, dpr = window.devicePixelRatio || 1;
+    if (!w || !h) return;
+    if (c.width !== Math.round(w * dpr) || c.height !== Math.round(h * dpr)) { c.width = Math.round(w * dpr); c.height = Math.round(h * dpr); }
+    var ctx = c.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+    var total = (settings.countdownSec + settings.postSec) * 1000;
+    var cueX = settings.countdownSec * 1000 / total * w;
+    ctx.fillStyle = css("--accent-soft");
+    ctx.fillRect(cueX, 0, w - cueX, h);           // 嗶之後的區域
+    ctx.fillStyle = css("--go");
+    ctx.fillRect(cueX - 1, 0, 2, h);               // 嗶的那一刻
+    ctx.strokeStyle = css("--accent");
+    ctx.lineWidth = 3;
+    ctx.lineJoin = "round";
+    ctx.beginPath();
+    live.forEach(function (p, i) {
+      var x = Math.min(w, p.t / total * w);
+      var y = h - 4 - Math.min(1, p.e / TRACE_MAX) * (h - 8);
+      if (i) ctx.lineTo(x, y); else ctx.moveTo(x, y);
+    });
+    ctx.stroke();
+  }
+
+  function renderChips() {
+    var box = $("chips");
+    clear(box);
+    if (mode !== "real" || !session) return;
+    var prog = GR.progressByMove(session);
+    GR.MOVES.forEach(function (m) {
+      var chip = document.createElement("div");
+      chip.className = "chip";
+      chip.setAttribute("aria-label", MOVE_NAME[m] + " " + prog[m].done + "/" + prog[m].total);
+      var pb = document.createElement("div");
+      pb.className = "pict-box";
+      putPict(pb, m, false);
+      chip.appendChild(pb);
+      var pips = document.createElement("div");
+      pips.className = "pips";
+      for (var i = 0; i < prog[m].total; i++) {
+        var p = document.createElement("span");
+        p.className = "pip" + (i < prog[m].done ? " on" : "");
+        pips.appendChild(p);
+      }
+      chip.appendChild(pips);
+      box.appendChild(chip);
+    });
+  }
+
+  // ================================================================ 錄一個動作
+
+  function runTake(item) {
+    stopCurrent();
+    var myRun = runId;
+    current = { item: item, t0: performance.now(), samples: [], cueMs: null, run: myRun };
+    live = [];
+    var cd = settings.countdownSec * 1000, post = settings.postSec * 1000;
+    var lastCount = null;
+    show("run");
+    renderChips();
+    setPhase("ready", item, String(Math.ceil(cd / 1000)));
+
+    (function tick() {
+      if (!current || current.run !== myRun || runId !== myRun) return;
+      var el = performance.now() - current.t0;
+      drawTrace();
+      if (el < cd) {
+        var count = Math.ceil((cd - el) / 1000);
+        if (count !== lastCount) { lastCount = count; $("big").textContent = String(count); sound.tick(); }
+        setBar(el / cd);
+        return setTimeout(tick, 20);
+      }
+      if (current.cueMs === null) {
+        current.cueMs = el;
+        setPhase("go", item, item.move === "still" ? "穩住" : "動！");
+        sound.go();
+      }
+      if (el < cd + post) {
+        setBar((el - cd) / post);
+        return setTimeout(tick, 20);
+      }
+      finishTake();
+    })();
+  }
+
+  function finishTake() {
+    var done = current;
+    current = null;
+    drawTrace();
+    setBar(1);
+    var kind;
+    if (mode === "practice") {
+      kind = GR.takeFeedback({ move: done.item.move, samples: GR.trimTake(done.samples, done.cueMs, settings.preSec, settings.postSec) }).kind;
+    } else {
+      session = GR.addTake(session, done.item, done.samples, done.cueMs);
+      save();
+      kind = GR.takeFeedback(GR.takeByIndex(session, done.item.index)).kind;
+      renderChips();
+    }
+    var good = kind === "ok";
+    setPhase(good ? "ok" : "retry", done.item, good ? "✓" : "?");
+    $("feedback").textContent = FEEDBACK[kind][0];
+    $("feedback").className = "feedback " + FEEDBACK[kind][1];
+    if (good) sound.ok(); else sound.retry();
+
+    if (mode === "practice") {
+      $("practiceActions").hidden = false;
+      return;
+    }
+    if (good) schedule(next, settings.restSec * 1000);
+    else { $("retryActions").hidden = false; $("retryActions").setAttribute("data-index", String(done.item.index)); }
+  }
+
+  function next() {
+    var item = GR.nextItem(session);
+    if (item) runTake(item); else showSummary();
+  }
+
+  // ================================================================ 試一次、正式錄、暫停
+
+  function startPractice() {
+    mode = "practice";
+    var move = PRACTICE_ORDER[practiceNo % PRACTICE_ORDER.length];
+    practiceNo++;
+    runTake({ index: -1, move: move });
+  }
+
+  function startReal(existing) {
+    mode = "real";
+    session = existing || GR.createSession(settings, { device: "", grip: grip, createdAt: new Date().toISOString() });
+    save();
+    next();
+  }
+
+  function pause() {
+    if (mode === "idle") return;
+    stopCurrent();
+    $("paused").hidden = false;
+    $("undoBtn").hidden = mode !== "real" || GR.lastTakeIndex(session) === null;
+  }
+
+  $("pauseBtn").addEventListener("click", pause);
+  $("resumeRunBtn").addEventListener("click", function () {
+    $("paused").hidden = true;
+    unlockAudio();
+    if (mode === "practice") startPractice(); else next();
+  });
+  $("undoBtn").addEventListener("click", function () {
+    $("paused").hidden = true;
+    session = GR.removeTake(session, GR.lastTakeIndex(session));
+    save();
+    next();
   });
 
   $("redoBtn").addEventListener("click", function () {
-    var last = GR.lastTakeIndex(session);
-    if (last === null) return;
-    stopCurrent();
-    session = GR.removeTake(session, last);
+    var idx = Number($("retryActions").getAttribute("data-index"));
+    session = GR.removeTake(session, idx);
     save();
-    renderDots();
-    if (!paused) schedule(runNext, 300);
+    runTake(session.plan[idx]);
+  });
+  $("skipBtn").addEventListener("click", next);
+  $("goRealBtn").addEventListener("click", function () { startReal(null); });
+  $("practiceAgainBtn").addEventListener("click", startPractice);
+
+  $("practiceBtn").addEventListener("click", function () { ensureSensors().then(function (ok) { if (ok) startPractice(); }); });
+  $("startBtn").addEventListener("click", function () { clearStore(); ensureSensors().then(function (ok) { if (ok) startReal(null); }); });
+  $("resumeBtn").addEventListener("click", function () {
+    var saved = load();
+    if (saved && GR.progress(saved).finished) { session = saved; showSummary(); return; }   // 已錄完：直接看總覽、存檔
+    ensureSensors().then(function (ok) { if (ok) startReal(saved); });
   });
 
   document.querySelectorAll("#grips button").forEach(function (b) {
@@ -305,11 +372,169 @@
     });
   });
 
-  // ---------- 啟動 ----------
-  var prev = load();
-  if (prev && !GR.progress(prev).finished && prev.takes.length) {
-    $("resumeBtn").hidden = false;
-    $("resumeBtn").textContent = "接續上次（已錄 " + prev.takes.length + " 個）";
+  // ================================================================ 總覽與存檔
+
+  function drawSpark(canvas, values, warn) {
+    var w = canvas.clientWidth || 60, h = canvas.clientHeight || 32, dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr);
+    var ctx = canvas.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    var cueX = settings.preSec / (settings.preSec + settings.postSec) * w;
+    ctx.fillStyle = css("--go");
+    ctx.fillRect(cueX - 0.5, 0, 1, h);
+    ctx.strokeStyle = warn ? css("--warn") : css("--accent");
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    values.forEach(function (v, i) {
+      var x = values.length > 1 ? i / (values.length - 1) * w : 0;
+      var y = h - 2 - Math.min(1, v / TRACE_MAX) * (h - 4);
+      if (i) ctx.lineTo(x, y); else ctx.moveTo(x, y);
+    });
+    ctx.stroke();
   }
-  if (!window.isSecureContext) status("startStatus", "這個網址不是 https，手機不會給感測資料", "warn");
+
+  function showSummary() {
+    stopCurrent();
+    mode = "real";
+    show("summary");
+    var grid = $("grid");
+    clear(grid);
+    var retryCount = 0;
+    GR.MOVES.forEach(function (m) {
+      var row = document.createElement("div");
+      row.className = "grid-row";
+      var head = document.createElement("div");
+      head.className = "pict-box";
+      head.setAttribute("aria-label", MOVE_NAME[m]);
+      putPict(head, m, false);
+      row.appendChild(head);
+      session.plan.filter(function (p) { return p.move === m; }).forEach(function (p, n) {
+        var t = GR.takeByIndex(session, p.index);
+        var kind = t ? GR.takeFeedback(t).kind : null;
+        var cell = document.createElement("button");
+        cell.type = "button";
+        cell.className = "cell" + (!t ? " empty" : kind !== "ok" ? " retry" : "");
+        cell.setAttribute("aria-label", MOVE_NAME[m] + " 第 " + (n + 1) + " 次" + (kind && kind !== "ok" ? "，可能要重錄" : "") + "，點一下重錄");
+        if (kind && kind !== "ok") retryCount++;
+        var cv = document.createElement("canvas");
+        cell.appendChild(cv);
+        cell.addEventListener("click", function () {
+          session = GR.removeTake(session, p.index);
+          save();
+          ensureSensors().then(function (ok) { if (ok) runTake(p); });
+        });
+        row.appendChild(cell);
+        requestAnimationFrame(function () { drawSpark(cv, t ? GR.traceOf(t, 30, settings.preSec, settings.postSec) : [], kind && kind !== "ok"); });
+      });
+      grid.appendChild(row);
+    });
+    $("sumTitle").textContent = session.takes.length + " 個動作錄好了" + (retryCount ? "，" + retryCount + " 個可能要重錄" : "");
+    var canShare = !!(navigator.canShare && typeof File === "function" && navigator.canShare({ files: [new File(["{}"], "a.json", { type: "application/json" })] }));
+    $("shareBtn").hidden = !canShare;
+    $("saveHint").hidden = !canShare;
+    $("saveBtn").className = canShare ? "" : "primary";
+  }
+
+  function file() {
+    var name = GR.filename(new Date());
+    return { name: name, blob: new Blob([GR.toJSON(session)], { type: "application/json" }) };
+  }
+
+  $("shareBtn").addEventListener("click", function () {
+    var f = file();
+    navigator.share({ files: [new File([f.blob], f.name, { type: "application/json" })], title: f.name })
+      .then(function () { status("sumStatus", "已送出 " + f.name); })
+      .catch(function () { /* 使用者取消 */ });
+  });
+  $("saveBtn").addEventListener("click", function () {
+    var f = file();
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(f.blob);
+    a.download = f.name;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(function () { URL.revokeObjectURL(a.href); }, 2000);
+    status("sumStatus", "已存成 " + f.name + "，在「檔案」App 的下載項目");
+  });
+  $("againBtn").addEventListener("click", function () {
+    if (!confirm("清掉這一輪重錄？還沒傳出去的資料會不見。")) return;
+    clearStore(); session = null; mode = "idle"; show("start"); $("resumeBtn").hidden = true;
+  });
+
+  // ================================================================ 暫存
+
+  function save() { try { localStorage.setItem(STORE, GR.toJSON(session)); } catch (e) { /* 忽略 */ } }
+  function load() {
+    try { var raw = localStorage.getItem(STORE); if (!raw) return null; var r = GR.fromJSON(raw); return r.ok ? r.session : null; }
+    catch (e) { return null; }
+  }
+  function clearStore() { try { localStorage.removeItem(STORE); } catch (e) { /* 忽略 */ } }
+
+  // ================================================================ 啟動
+
+  var demo = $("demo");
+  ["push", "pull", "pan_left", "pan_right", "still"].forEach(function (m) {
+    var fig = document.createElement("figure");
+    var pb = document.createElement("div");
+    pb.className = "pict-box";
+    putPict(pb, m, true);
+    var cap = document.createElement("figcaption");
+    cap.textContent = MOVE_NAME[m];
+    fig.appendChild(pb); fig.appendChild(cap);
+    demo.appendChild(fig);
+  });
+
+  var prev = load();
+  if (prev && prev.takes.length) {
+    var pr = GR.progress(prev);
+    $("resumeBtn").hidden = false;
+    $("resumeBtn").textContent = pr.finished ? "看上次錄好的 " + pr.done + " 個" : "接續上次（已錄 " + pr.done + " / " + pr.total + "）";
+  }
+  if (!window.isSecureContext) status("startStatus", "這個網址不是 https，手機不會給感測資料");
+
+  // ---------------- 預覽模式（不開感測器，看各畫面；給截圖與檢查用） ----------------
+  var preview = new URLSearchParams(location.search).get("preview");
+  if (preview) runPreview(preview);
+
+  function fakeSamples(move, moved) {
+    var out = [];
+    for (var t = -settings.preSec * 1000; t <= settings.postSec * 1000; t += 16) {
+      var bump = moved && t > 250 && t < 900 ? Math.sin((t - 250) / 650 * Math.PI) : 0;
+      var turn = move === "pan_left" || move === "pan_right";
+      out.push({ t: Math.round(t), a: [0.05, 0.04, turn ? 0.2 * bump : 2.6 * bump], g: null, r: [1, turn ? 90 * bump : 4 * bump, 1] });
+    }
+    return out;
+  }
+
+  function runPreview(which) {
+    var item = { index: 0, move: which === "practice" ? "pan_left" : "push" };
+    mode = which === "practice" ? "practice" : "real";
+    session = GR.createSession(settings, { grip: "手持" });
+    for (var i = 0; i < 7; i++) session = GR.addTake(session, session.plan[i], fakeSamples(session.plan[i].move, true).map(function (s) { return { t: s.t + 3000, a: s.a, g: s.g, r: s.r }; }), 3000);
+    if (which === "summary") {
+      while (GR.nextItem(session)) {
+        var it = GR.nextItem(session);
+        var moved = it.index % 9 !== 4;
+        session = GR.addTake(session, it, fakeSamples(it.move, moved).map(function (s) { return { t: s.t + 3000, a: s.a, g: s.g, r: s.r }; }), 3000);
+      }
+      return showSummary();
+    }
+    show("run");
+    renderChips();
+    var total = settings.countdownSec * 1000;
+    var fs = fakeSamples(item.move, which !== "retry" && which !== "ready");
+    live = fs.map(function (s) { return { t: s.t + total, e: GR.energy(s) }; })
+      .filter(function (p) { return which === "ready" ? p.t < total * 0.66 : which === "go" ? p.t < total + 700 : true; });
+    if (which === "ready") { setPhase("ready", item, "2"); setBar(0.4); }
+    else if (which === "go") { setPhase("go", item, "動！"); setBar(0.3); }
+    else if (which === "ok" || which === "practice") {
+      setPhase("ok", item, "✓"); setBar(1);
+      $("feedback").textContent = FEEDBACK.ok[0]; $("feedback").className = "feedback ok";
+      if (which === "practice") $("practiceActions").hidden = false;
+    } else if (which === "retry") {
+      setPhase("retry", item, "?"); setBar(1);
+      $("feedback").textContent = FEEDBACK.nomove[0]; $("feedback").className = "feedback retry";
+      $("retryActions").hidden = false;
+    }
+    requestAnimationFrame(drawTrace);
+  }
 })();

@@ -170,6 +170,61 @@
     };
   }
 
+  // ---------- 即時活動量：畫面上那條會跳的線 ----------
+  // 加速度（m/s²）加上轉速（度／秒）除以 30，讓「推一下」和「轉一下」的高度差不多
+  function energy(s) {
+    if (!s) return 0;
+    return round3((s.a ? norm(s.a) : 0) + (s.r ? norm(s.r) / 30 : 0));
+  }
+
+  // 每種動作錄了幾個、總共要幾個
+  function progressByMove(session) {
+    var out = {};
+    MOVES.forEach(function (m) { out[m] = { done: 0, total: 0 }; });
+    session.plan.forEach(function (p) { out[p.move].total++; });
+    session.takes.forEach(function (t) { if (out[t.move]) out[t.move].done++; });
+    return out;
+  }
+
+  // 總覽頁的小線圖：把提示前 preSec 到提示後 postSec 切成 buckets 段，每段取最大活動量
+  function traceOf(take, buckets, preSec, postSec) {
+    var n = buckets || 40, lo = -preSec * 1000, hi = postSec * 1000, w = (hi - lo) / n;
+    var out = [];
+    for (var i = 0; i < n; i++) out.push(0);
+    (take.samples || []).forEach(function (s) {
+      if (s.t < lo || s.t > hi) return;
+      var k = Math.min(n - 1, Math.floor((s.t - lo) / w));
+      out[k] = Math.max(out[k], energy(s));
+    });
+    return out;
+  }
+
+  function takeByIndex(session, index) {
+    for (var i = 0; i < session.takes.length; i++) if (session.takes[i].index === index) return session.takes[i];
+    return null;
+  }
+
+  // ---------- 錄完一個動作後的快速回饋 ----------
+  // 只看提示之後的資料有沒有明顯的移動或轉動。門檻是暫定值（T18 用真實資料再調）：
+  // 加速度 1.0 m/s²、轉速 30 度／秒。
+  var MOVE_ACC = 1.0, MOVE_ROT = 30;
+
+  function takeFeedback(take) {
+    var after = (take.samples || []).filter(function (s) { return s.t >= 0; });
+    var hasData = after.some(function (s) { return s.a || s.r; });
+    if (!hasData) return { kind: "nodata", moved: false, peakAcc: 0, peakRot: 0 };
+    var peakAcc = 0, peakRot = 0;
+    after.forEach(function (s) {
+      if (s.a) peakAcc = Math.max(peakAcc, norm(s.a));
+      if (s.r) peakRot = Math.max(peakRot, norm(s.r));
+    });
+    var moved = peakAcc >= MOVE_ACC || peakRot >= MOVE_ROT;
+    var kind;
+    if (take.move === "still") kind = moved ? "shaky" : "ok";
+    else kind = moved ? "ok" : "nomove";
+    return { kind: kind, moved: moved, peakAcc: round3(peakAcc), peakRot: round3(peakRot) };
+  }
+
   // ---------- 存檔 ----------
   function toJSON(session) { return JSON.stringify(session); }
 
@@ -201,6 +256,7 @@
     parseSettings: parseSettings, makePlan: makePlan, maxRun: maxRun,
     sampleFrom: sampleFrom, createSession: createSession, nextItem: nextItem, progress: progress,
     trimTake: trimTake, addTake: addTake, removeTake: removeTake, lastTakeIndex: lastTakeIndex,
-    summarizeTake: summarizeTake, toJSON: toJSON, fromJSON: fromJSON, filename: filename
+    summarizeTake: summarizeTake, takeFeedback: takeFeedback, energy: energy, progressByMove: progressByMove,
+    traceOf: traceOf, takeByIndex: takeByIndex, toJSON: toJSON, fromJSON: fromJSON, filename: filename
   };
 });
