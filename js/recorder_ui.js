@@ -116,8 +116,20 @@
     el.className = "status" + (kind ? " " + kind : "");
   }
 
+  var MOVE_TEXT = {
+    push: "推近：手機往前送", pull: "拉遠：手機往後收",
+    pan_left: "左搖：原地往左轉", pan_right: "右搖：原地往右轉", still: "拿穩不動"
+  };
+
   function showMove(move) {
     document.querySelectorAll("#stage .icon").forEach(function (svg) { svg.hidden = svg.getAttribute("data-move") !== move; });
+    setLabel(MOVE_TEXT[move] || "", false);
+  }
+
+  function setLabel(text, go) {
+    var el = $("moveLabel");
+    el.textContent = text;
+    el.className = "move-label" + (go ? " go" : "");
   }
 
   function renderDots() {
@@ -166,6 +178,7 @@
         take.cueMs = el;
         $("stage").classList.add("cue");
         $("count").textContent = "";
+        setLabel(item.move === "still" ? "現在拿穩！" : "現在動！", true);
         setRing(1);
         beep();
         // iPhone 不支援震動；其他手機要使用者點過畫面才能震

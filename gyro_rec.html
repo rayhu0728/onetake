@@ -45,11 +45,14 @@
   .hold { display: flex; align-items: center; gap: 10px; font-size: 15px; color: var(--muted); }
   .hold svg { width: 44px; height: 44px; color: var(--muted); flex: none; }
   .side { display: flex; flex-direction: column; align-items: center; gap: 12px; }
-  /* 橫拿手機：倒數圈在左、進度與按鈕在右，一屏放得下 */
+  .move-label { font-size: 26px; font-weight: 800; min-height: 1.4em; }
+  .move-label.go { color: var(--accent); }
+  main { min-height: 100vh; min-height: 100dvh; }
+  /* 橫拿手機：倒數圈在左、進度與按鈕在右，一屏放得下（dvh 會扣掉 Safari 的網址列） */
   @media (orientation: landscape) and (max-height: 520px) {
     main { padding-top: max(8px, env(safe-area-inset-top)); padding-bottom: max(8px, env(safe-area-inset-bottom)); }
     #run { flex-direction: row; justify-content: center; max-width: none; gap: 28px; }
-    #run .stage { width: min(82vh, 300px); }
+    #run .stage { width: min(70vh, 300px); width: min(78dvh, 300px); }
     #start, #done { gap: 10px; }
   }
 </style>
@@ -88,6 +91,7 @@
     <span class="count" id="count" aria-live="off">3</span>
   </div>
   <div class="side">
+    <p class="move-label" id="moveLabel" aria-live="polite"></p>
     <div class="dots" id="dots" aria-hidden="true"></div>
     <p class="muted" id="runInfo" aria-live="polite"></p>
     <div class="row">
