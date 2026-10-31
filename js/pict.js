@@ -57,5 +57,32 @@
     box.appendChild(pictogram(move, animate));
   }
 
-  root.GyroPict = { NAME: NAME, HINT: HINT, pictogram: pictogram, put: put };
+  // ---- 練習中的反應提示（T19 改版，2026-10-31 Ray 選定）：三層箭頭，一眼就懂，不用解讀 ----
+  // 推近往上（往前）、拉遠往下（往後）、左右搖往左右。每種動作有自己的顏色。
+  var COLOR = { push: "#FFB020", pull: "#38D2F0", pan_left: "#B98CFF", pan_right: "#B98CFF" };
+  var SHORT = { push: "推", pull: "拉", pan_left: "左", pan_right: "右" };
+  var CHEVRON = {
+    push: { vb: "0 -6 120 142", w: 16, d: ["M14 54 L60 12 L106 54", "M14 90 L60 48 L106 90", "M14 126 L60 84 L106 126"] },
+    pull: { vb: "0 -6 120 142", w: 16, d: ["M14 76 L60 118 L106 76", "M14 40 L60 82 L106 40", "M14 4 L60 46 L106 4"] },
+    pan_left: { vb: "0 0 300 180", w: 30, d: ["M90 14 L24 90 L90 166", "M170 14 L104 90 L170 166", "M250 14 L184 90 L250 166"] },
+    pan_right: { vb: "0 0 300 180", w: 30, d: ["M210 14 L276 90 L210 166", "M130 14 L196 90 L130 166", "M50 14 L116 90 L50 166"] }
+  };
+
+  function arrow(move) {
+    var c = CHEVRON[move];
+    var svg = el("svg", { viewBox: c ? c.vb : "0 0 10 10", class: "arrow", "aria-hidden": "true" });
+    if (!c) return svg;
+    [1, 0.6, 0.3].forEach(function (op, i) {
+      el("path", { d: c.d[i], fill: "none", stroke: "currentColor", "stroke-width": c.w, "stroke-linecap": "round", "stroke-linejoin": "round", opacity: op }, svg);
+    });
+    return svg;
+  }
+
+  function putArrow(box, move) {
+    while (box.firstChild) box.removeChild(box.firstChild);
+    if (move) box.appendChild(arrow(move));
+    box.style.color = COLOR[move] || "";
+  }
+
+  root.GyroPict = { NAME: NAME, HINT: HINT, pictogram: pictogram, put: put, COLOR: COLOR, SHORT: SHORT, arrow: arrow, putArrow: putArrow };
 })(typeof self !== "undefined" ? self : this);

@@ -1,8 +1,9 @@
 /*
  * 3b 陀螺儀跟拍練習：畫面層（T19）
- * 手機自己播練習影片，提示時間跟著影片走（歌曲時間 = 影片播到哪）。每個運鏡前，提示卡的圈跑兩秒、
- * 圈裡的手機示範要做的動作；圈滿變藍就動。動作被認出來的當下，影片左上角會出現「你做了什麼」，
- * 對上提示就在卡片上顯示準、早、晚、方向錯。結束後有整輪成績與整首時間軸，點時間軸上的點可以從那裡再練。
+ * 手機自己播練習影片，提示時間跟著影片走（歌曲時間 = 影片播到哪）。每個運鏡前兩秒，影片中間偏下
+ * 出現小小的半透明箭頭與倒數圈；圈滿時箭頭發亮往動作方向衝、那一側的邊緣亮起來，這時就動
+ * （2026-10-31 Ray 從草稿選定：反應提示要一眼就懂、不擋畫面）。動作被認出來的當下，影片左上角
+ * 會出現「你做了什麼」；對上提示就在右上角顯示準、早、晚、方向錯。結束後有整輪成績與整首時間軸，點時間軸上的點可以從那裡再練。
  * 流程規則都在 GyroPractice（純邏輯）；動作偵測在 GyroDetect；判定在 Judge。不用 innerHTML。
  * localStorage 只存上次成績；選過的影片存在這支手機的瀏覽器資料庫（IndexedDB），不上傳。
  * 網址加 ?preview=start|idle|ready|go|ok|early|wrong|miss|summary 可以不開感測器直接看各個畫面（截圖用）。
@@ -17,12 +18,12 @@
   var LAST = "gyro.practice.last";
   var DB_NAME = "onetake", DB_STORE = "videos";
   var KIND_CLASS = { ok: "good", early: "warn", late: "warn", moved: "warn", wrong: "bad", miss: "miss" };
-  var KIND_BIG = { ok: "✓", early: "早", late: "晚", moved: "!", wrong: "✗", miss: "—" };
   var KIND_LABEL = [["ok", "準"], ["early", "早"], ["late", "晚"], ["wrong", "方向錯"], ["miss", "沒做到"]];
   var PREROLL_SEC = 3;
   var DUR_TOL_SEC = 1.5;     // 影片長度和歌曲差多少以內算同一部
   var YOU_MS = 1100;         // 「你做了什麼」顯示多久
-  var RING = 2 * Math.PI * 46;
+  var RING = 2 * Math.PI * 42;
+  var SIDE = { push: "top", pull: "bottom", pan_left: "left", pan_right: "right" };   // 「動」的時候哪一邊發亮
 
   var song = SONGS[0] || null;
   var bigOnly = true, soundOn = true;
@@ -37,7 +38,7 @@
   var raf = 0, prerollTimer = null;
   var listening = false, lastEventAt = 0, energy = 0;
   var youUntil = 0;
-  var lastTickKey = "", lastGoId = null, pictKey = "", nextKey = "";
+  var lastTickKey = "", lastGoId = null, cueMove = "", nextMove = "";
   var selectedId = null;
   var audio = null, wakeLock = null;
 
@@ -195,7 +196,7 @@
     prior = keep || [];
     run = GP.createRun(cues, { fromMs: from });
     detector.reset();
-    lastTickKey = ""; lastGoId = null; pictKey = ""; nextKey = "";
+    lastTickKey = ""; lastGoId = null; nextMove = "";
     $("video").hidden = !useVideo;
     $("clockFace").hidden = useVideo;
     show("run");
@@ -283,7 +284,7 @@
   }
 
   function showYou(move) {
-    PICT.put($("youPict"), move, false);
+    PICT.putArrow($("youArrow"), move);
     $("youText").textContent = PICT.NAME[move] || move;
     youUntil = performance.now() + YOU_MS;
   }
@@ -299,48 +300,44 @@
     el.appendChild(small);
   }
 
-  function setPict(box, move, animate, keyName) {
-    var key = move + (animate ? "+" : "");
-    if (keyName === "cue" ? key === pictKey : key === nextKey) return;
-    if (keyName === "cue") pictKey = key; else nextKey = key;
-    if (move) PICT.put(box, move, animate); else clear(box);
+  // 換提示的動作：箭頭、顏色、字、發亮的邊（同一個動作不重畫，動畫才不會被打斷）
+  function setCueMove(move) {
+    if (move === cueMove) return;
+    cueMove = move;
+    $("cue").setAttribute("data-move", move);
+    $("stage").style.setProperty("--c", PICT.COLOR[move] || "#FFFFFF");
+    PICT.putArrow($("cueArrow"), move);
+    $("cueWord").textContent = PICT.SHORT[move] || "";
+    $("edge").setAttribute("data-side", SIDE[move] || "top");
   }
 
   function render(p, now) {
-    var cue = $("cue");
-    var kind = p.phase === "result" ? KIND_CLASS[p.result.kind] : "";
-    cue.setAttribute("data-phase", p.phase);
-    cue.setAttribute("data-kind", kind);
-
-    var big = "", text = "", textClass = "cue-text", fill = 0, move = null;
-    if (p.phase === "ready") { big = String(p.count); text = PICT.NAME[p.cue.move]; fill = p.fraction; move = p.cue.move; }
-    else if (p.phase === "go") { big = "動！"; text = PICT.NAME[p.cue.move]; fill = 1; move = p.cue.move; }
-    else if (p.phase === "result") { big = KIND_BIG[p.result.kind]; text = J.describe(p.result); textClass += " " + kind; move = p.result.expected; }
-    else if (p.phase === "idle") { move = p.cue.move; }
-    else { big = "完"; }
-    $("cueBig").textContent = big;
-    $("cueText").textContent = text;
-    $("cueText").className = textClass;
+    // 提示只在倒數與「動」的時候出現在影片上，其他時候不擋畫面
+    var shown = p.phase === "ready" || p.phase === "go";
+    if (shown) setCueMove(p.cue.move);
+    $("cue").setAttribute("data-phase", shown ? p.phase : "idle");
+    var fill = p.phase === "ready" ? p.fraction : 0;
     $("ringFill").style.strokeDasharray = RING.toFixed(2);
     $("ringFill").style.strokeDashoffset = (RING * (1 - Math.max(0, Math.min(1, fill)))).toFixed(2);
-    setPict($("cuePict"), move, p.phase === "ready", "cue");
+    $("edge").classList.toggle("on", p.phase === "go");
 
-    // 早晚刻度：中間是提示那一刻，綠色區是「準」，點是你開始動的時間
-    var timed = p.phase === "result" && typeof p.result.deltaMs === "number" && /^(ok|early|late)$/.test(p.result.kind);
-    $("offset").hidden = !timed;
-    if (timed) {
-      var late = J.DEFAULTS.lateWindowMs;
-      $("offsetDot").style.left = (50 + Math.max(-1, Math.min(1, p.result.deltaMs / late)) * 50).toFixed(1) + "%";
+    // 結果：右上角小標籤，下一個提示的倒數開始了也照樣顯示到時間到
+    var last = run.lastResult();
+    var res = $("result");
+    if (last && now - last.atMs < GP.DEFAULTS.resultMs) {
+      res.hidden = false;
+      res.className = "result " + KIND_CLASS[last.kind];
+      res.textContent = (last.kind === "ok" ? "✓ " : last.kind === "wrong" ? "✗ " : "") + J.describe(last);
+    } else {
+      res.hidden = true;
     }
 
-    // 再下一個（8 秒內才顯示），幫忙預先想好
-    var after = null;
-    if (p.cue) run.cues().some(function (c) { if (c.t > p.cue.t) { after = c; return true; } return false; });
-    var showNext = !!after && after.t - now < 8000 && p.phase !== "end";
-    $("nextBox").hidden = !showNext;
-    setPict($("nextPict"), showNext ? after.move : null, false, "next");
+    // 接著：沒有提示在畫面上時，左下角先告訴你下一個是什麼（6 秒內）
+    var upcoming = !shown && p.cue && p.cue.t - now < 6000 ? p.cue : null;
+    $("nextBox").hidden = !upcoming;
+    if (upcoming && upcoming.move !== nextMove) { nextMove = upcoming.move; PICT.putArrow($("nextArrow"), upcoming.move); }
 
-    // 聲音：倒數每一秒嗶一下，變藍時大聲嗶
+    // 聲音：倒數每一秒嗶一下，發亮時大聲嗶
     if (p.phase === "ready") {
       var key = p.cue.id + ":" + p.count;
       if (key !== lastTickKey) { lastTickKey = key; if (state === "running") sound.tick(); }
@@ -444,8 +441,8 @@
       var mine = rs.filter(function (r) { return r.expected === m; });
       if (!mine.length) return;
       var fig = document.createElement("figure");
-      var pb = document.createElement("div"); pb.className = "pict-box";
-      PICT.put(pb, m, false);
+      var pb = document.createElement("div"); pb.className = "arrow-box";
+      PICT.putArrow(pb, m);
       var cap = document.createElement("figcaption"); cap.textContent = PICT.NAME[m];
       var b = document.createElement("b"); b.textContent = mine.filter(function (r) { return r.kind === "ok"; }).length + " / " + mine.length;
       fig.appendChild(pb); fig.appendChild(cap); fig.appendChild(b);
@@ -468,7 +465,7 @@
       return;
     }
     var r = resultMap()[c.id];
-    PICT.put($("detailPict"), c.move, false);
+    PICT.putArrow($("detailPict"), c.move);
     $("detailTitle").textContent = fmt(c.t) + " " + PICT.NAME[c.move];
     $("detailSub").textContent = r ? J.describe(r) : "這次沒練到這裡";
   }
@@ -515,8 +512,8 @@
     GP.MOVES.forEach(function (m) {
       var n = cues.filter(function (c) { return c.move === m; }).length;
       var fig = document.createElement("figure");
-      var pb = document.createElement("div"); pb.className = "pict-box";
-      PICT.put(pb, m, true);
+      var pb = document.createElement("div"); pb.className = "arrow-box";
+      PICT.putArrow(pb, m);
       var cap = document.createElement("figcaption"); cap.textContent = PICT.NAME[m];
       var b = document.createElement("b"); b.textContent = "×" + n;
       fig.appendChild(pb); fig.appendChild(cap); fig.appendChild(b);
