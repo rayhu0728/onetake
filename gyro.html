@@ -66,7 +66,7 @@
   .video-info.warn { color: var(--warn); }
   .tip { display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--muted); }
 
-  /* 練習中：提示疊在影片上，小、在畫面中間偏下（2026-10-31 Ray 從草稿選定；試用後說太淡，改成 90% 不透明加深色描邊）。
+  /* 練習中：提示疊在影片上，小、在畫面中間偏下（2026-10-31 Ray 從草稿選定；試用後說太淡，改成不透明、顏色加深、加深色描邊與深色圓底）。
      每種動作一個顏色：推近橘（往上＝往前）、拉遠藍（往下＝往後）、左右搖紫。圈跑滿那一刻箭頭發亮往動作方向衝，那一側的邊緣跟著亮 */
   #run { max-width: 980px; gap: 8px; }
   .topbar { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
@@ -78,7 +78,8 @@
   .clock-face { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); color: #FFFFFF; font-size: 24px; font-weight: 800; font-variant-numeric: tabular-nums; opacity: 0.6; }
   .arrow-box { display: flex; }
   .arrow-box .arrow { display: block; width: 100%; height: 100%; }
-  .cue { position: absolute; left: 50%; top: 60%; width: 29cqh; height: 29cqh; transform: translate(-50%, -50%); opacity: 0.9; color: var(--c); pointer-events: none; }
+  .cue { position: absolute; left: 50%; top: 60%; width: 29cqh; height: 29cqh; transform: translate(-50%, -50%); color: var(--c); pointer-events: none; }
+  .cue::before { content: ""; position: absolute; inset: 6%; border-radius: 50%; background: rgba(14,16,19,0.5); }
   .cue[data-phase="idle"] { display: none; }
   .ring { position: absolute; inset: 0; width: 100%; height: 100%; }
   .ring circle { fill: none; stroke-width: 5; }
@@ -89,7 +90,7 @@
   .cue .arrow-box { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); filter: drop-shadow(0 0 2px rgba(0,0,0,0.9)) drop-shadow(0 0 5px rgba(0,0,0,0.6)); }
   .cue[data-move="push"] .arrow-box, .cue[data-move="pull"] .arrow-box { width: 53%; height: 62%; }
   .cue[data-move="pan_left"] .arrow-box, .cue[data-move="pan_right"] .arrow-box { width: 78%; height: 47%; }
-  .cue[data-phase="ready"] .arrow-box { opacity: 0.75; }
+  .cue[data-phase="ready"] .arrow-box { opacity: 0.85; }
   .cue[data-phase="go"] .arrow-box { filter: drop-shadow(0 0 2px rgba(0,0,0,0.9)) drop-shadow(0 0 6px var(--c)) drop-shadow(0 0 16px var(--c)); animation-duration: 0.7s; animation-timing-function: ease-out; animation-fill-mode: forwards; }
   .cue[data-phase="go"][data-move="push"] .arrow-box { animation-name: go-up; }
   .cue[data-phase="go"][data-move="pull"] .arrow-box { animation-name: go-down; }
@@ -100,7 +101,7 @@
   @keyframes go-left { to { transform: translate(-157%, -50%); } }
   @keyframes go-right { to { transform: translate(57%, -50%); } }
   .cue-word { position: absolute; left: 50%; top: 100%; transform: translateX(-50%); font-size: 7cqh; line-height: 1.2; font-weight: 900; text-shadow: 0 0 3px rgba(0,0,0,0.9), 0 0 6px rgba(0,0,0,0.6); }
-  .cue[data-phase="ready"] .cue-word { opacity: 0.8; }
+  .cue[data-phase="ready"] .cue-word { opacity: 0.9; }
   .cue[data-phase="go"] .cue-word { text-shadow: 0 0 3px rgba(0,0,0,0.9), 0 0 8px var(--c), 0 0 20px var(--c); }
   .edge { position: absolute; background: var(--c); box-shadow: 0 0 30px 12px var(--c); opacity: 0; transition: opacity 250ms; pointer-events: none; }
   .edge.on { opacity: 1; transition: none; }
@@ -141,6 +142,9 @@
   .detail .info b { font-size: 17px; }
   .detail .info span { font-size: 14px; color: var(--muted); }
   .detail button { min-height: 44px; padding: 0 14px; }
+  .detail-actions { display: flex; flex-direction: column; gap: 6px; }
+  .flag-btn[aria-pressed="true"] { border-color: var(--bad); background: var(--bad-soft); color: var(--bad); }
+  .flag-row { align-items: center; font-size: 15px; color: var(--bad); font-weight: 700; }
 
   .overlay { position: fixed; inset: 0; background: rgba(10, 12, 16, 0.6); display: flex; align-items: center; justify-content: center; padding: 16px; z-index: 10; }
   .overlay .box { background: var(--panel); border-radius: 20px; padding: 24px; display: flex; flex-direction: column; gap: 12px; align-items: stretch; min-width: 260px; }
@@ -236,7 +240,8 @@
     <canvas id="sumLine" aria-label="整首歌每個提示的結果，點一下看細節"></canvas>
     <div class="time-labels"><span>0:00</span><span id="sumEnd"></span></div>
   </div>
-  <div class="detail" id="detail"><div class="arrow-box" id="detailPict"></div><div class="info"><b id="detailTitle">點時間軸上的點看細節</b><span id="detailSub"></span></div><button type="button" id="fromHereBtn" hidden>從這裡練</button></div>
+  <div class="detail" id="detail"><div class="arrow-box" id="detailPict"></div><div class="info"><b id="detailTitle">點時間軸上的點看細節</b><span id="detailSub"></span></div><div class="detail-actions"><button type="button" id="fromHereBtn" hidden>從這裡練</button><button type="button" class="flag-btn" id="flagBtn" hidden aria-pressed="false">提示錯了</button></div></div>
+  <div class="row flag-row" id="flagRow" hidden><span id="flagCount"></span><button type="button" id="flagShareBtn">傳到電腦</button></div>
   <div class="row">
     <button type="button" class="primary" id="againBtn">再練一次</button>
     <button type="button" id="homeBtn">回首頁</button>
@@ -261,10 +266,10 @@
 </main>
 <script src="js/judge.js?v=87005425"></script>
 <script src="js/recorder.js?v=d4182f9d"></script>
-<script src="js/pict.js?v=2a1556de"></script>
+<script src="js/pict.js?v=05c6648f"></script>
 <script src="js/detect.js?v=499c35a7"></script>
-<script src="js/practice.js?v=2e4851c0"></script>
-<script src="js/songs.js?v=07a1a251"></script>
-<script src="js/gyro_ui.js?v=e3bd90ca"></script>
+<script src="js/practice.js?v=dd46010d"></script>
+<script src="js/songs.js?v=02f84335"></script>
+<script src="js/gyro_ui.js?v=9ff5f36b"></script>
 </body>
 </html>

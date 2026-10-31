@@ -16,6 +16,7 @@
 
   var SONGS = window.GyroSongs || [];
   var LAST = "gyro.practice.last";
+  var FLAGS = "gyro.cueflags.";      // + 歌曲 id：Ray 標的「這個提示錯了」
   var DB_NAME = "onetake", DB_STORE = "videos";
   var KIND_CLASS = { ok: "good", early: "warn", late: "warn", moved: "warn", wrong: "bad", miss: "miss" };
   var KIND_LABEL = [["ok", "準"], ["early", "早"], ["late", "晚"], ["wrong", "方向錯"], ["miss", "沒做到"]];
@@ -40,6 +41,7 @@
   var youUntil = 0;
   var lastTickKey = "", lastGoId = null, cueMove = "", nextMove = "";
   var selectedId = null;
+  var flagList = [];
   var audio = null, wakeLock = null;
 
   // ================================================================ 小工具
@@ -378,6 +380,10 @@
       ctx.arc(x(cu.t), y, rr ? r : r - 1, 0, Math.PI * 2);
       if (rr) { ctx.fillStyle = css("--" + KIND_CLASS[rr.kind]); ctx.fill(); }
       else { ctx.fillStyle = css("--panel"); ctx.fill(); ctx.lineWidth = 2; ctx.strokeStyle = css("--muted"); ctx.stroke(); }
+      if (flagged(cu)) {   // 標成「提示錯了」的：紅色外圈
+        ctx.beginPath(); ctx.arc(x(cu.t), y, r + 3, 0, Math.PI * 2);
+        ctx.lineWidth = 2.5; ctx.strokeStyle = css("--bad"); ctx.stroke();
+      }
       if (cu.id === selectedId) {
         ctx.beginPath(); ctx.arc(x(cu.t), y, r + 4, 0, Math.PI * 2);
         ctx.lineWidth = 2; ctx.strokeStyle = css("--text"); ctx.stroke();
@@ -458,6 +464,8 @@
   function renderDetail() {
     var c = cues.filter(function (x) { return x.id === selectedId; })[0];
     $("fromHereBtn").hidden = !c;
+    $("flagBtn").hidden = !c;
+    renderFlagRow();
     if (!c) {
       clear($("detailPict"));
       $("detailTitle").textContent = "點時間軸上的點看細節";
@@ -468,7 +476,45 @@
     PICT.putArrow($("detailPict"), c.move);
     $("detailTitle").textContent = fmt(c.t) + " " + PICT.NAME[c.move];
     $("detailSub").textContent = r ? J.describe(r) : "這次沒練到這裡";
+    $("flagBtn").setAttribute("aria-pressed", flagged(c) ? "true" : "false");
   }
+
+  // ---------------- 「這個提示錯了」：存在這支手機，可以傳到電腦 ----------------
+  function loadFlags() {
+    try { return JSON.parse(localStorage.getItem(FLAGS + song.id) || "[]") || []; } catch (e) { return []; }
+  }
+  function saveFlags(list) {
+    try { localStorage.setItem(FLAGS + song.id, JSON.stringify(list)); } catch (e) { /* 存不了就算了 */ }
+  }
+  function flagged(cu) { return GP.isFlagged(flagList, cu); }
+  function renderFlagRow() {
+    $("flagRow").hidden = !flagList.length;
+    $("flagCount").textContent = "已標 " + flagList.length + " 個提示錯了";
+  }
+  $("flagBtn").addEventListener("click", function () {
+    var c = cues.filter(function (x) { return x.id === selectedId; })[0];
+    if (!c) return;
+    flagList = GP.toggleFlag(flagList, c);
+    saveFlags(flagList);
+    renderDetail();
+    drawTimeline($("sumLine"), null);
+  });
+  $("flagShareBtn").addEventListener("click", function () {
+    var now = new Date();
+    var pad = function (n) { return String(n).padStart(2, "0"); };
+    var name = "cueflags_" + song.id + "_" + now.getFullYear() + pad(now.getMonth() + 1) + pad(now.getDate()) + "_" + pad(now.getHours()) + pad(now.getMinutes()) + ".json";
+    var blob = new Blob([JSON.stringify(GP.flagsFile(song, flagList, now.toISOString()), null, 2)], { type: "application/json" });
+    var file = typeof File === "function" ? new File([blob], name, { type: "application/json" }) : null;
+    if (file && navigator.canShare && navigator.canShare({ files: [file] })) {
+      navigator.share({ files: [file], title: name }).catch(function () { /* 使用者取消 */ });
+      return;
+    }
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = name;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(function () { URL.revokeObjectURL(a.href); }, 2000);
+  });
 
   $("sumLine").addEventListener("click", function (e) {
     var c = $("sumLine"), rect = c.getBoundingClientRect(), px = e.clientX - rect.left;
@@ -618,6 +664,7 @@
     return;
   }
   $("songName").textContent = song.title + (song.artist ? " · " + song.artist : "");
+  flagList = loadFlags();
   renderCounts();
   renderLast();
   if (!window.isSecureContext) status("startStatus", "這個網址不是 https，手機不會給感測資料");

@@ -162,8 +162,31 @@
     };
   }
 
+  // 「這個提示錯了」（v3，2026-10-31）：Ray 練完在成績頁標出方向不對的提示，匯出給電腦修運鏡資料。
+  // flags 是 [{t 毫秒, move}]，用提示時間辨認；同一個時間再按一次就取消。回傳新陣列，依時間排序。
+  function toggleFlag(flags, cue) {
+    var list = (flags || []).filter(function (f) { return f && typeof f.t === "number"; });
+    var has = list.some(function (f) { return f.t === cue.t; });
+    var out = has ? list.filter(function (f) { return f.t !== cue.t; }) : list.concat([{ t: cue.t, move: cue.move }]);
+    return out.sort(function (a, b) { return a.t - b.t; });
+  }
+
+  function isFlagged(flags, cue) {
+    return (flags || []).some(function (f) { return f && f.t === cue.t; });
+  }
+
+  // 匯出檔內容：時間換成秒，方便對照影片
+  function flagsFile(song, flags, createdAt) {
+    return {
+      version: 1, kind: "cue-flags", song: song && song.id || "", title: song && song.title || "",
+      createdAt: createdAt || "",
+      flags: (flags || []).map(function (f) { return { t: f.t / 1000, move: f.move }; })
+    };
+  }
+
   return {
     DEFAULTS: merge(), MOVES: MOVES.slice(), normalize: normalize, buildCues: buildCues, createRun: createRun,
-    phaseAt: phaseAt, tendency: tendency, songFromSheet: songFromSheet
+    phaseAt: phaseAt, tendency: tendency, songFromSheet: songFromSheet,
+    toggleFlag: toggleFlag, isFlagged: isFlagged, flagsFile: flagsFile
   };
 });

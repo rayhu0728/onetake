@@ -59,7 +59,8 @@
 
   // ---- 練習中的反應提示（T19 改版，2026-10-31 Ray 選定）：三層箭頭，一眼就懂，不用解讀 ----
   // 推近往上（往前）、拉遠往下（往後）、左右搖往左右。每種動作有自己的顏色。
-  var COLOR = { push: "#FFB020", pull: "#38D2F0", pan_left: "#B98CFF", pan_right: "#B98CFF" };
+  // 2026-10-31 Ray 試用：太淡 → 改深一點的顏色
+  var COLOR = { push: "#FF8A00", pull: "#00A6E0", pan_left: "#9B5CFF", pan_right: "#9B5CFF" };
   var SHORT = { push: "推", pull: "拉", pan_left: "左", pan_right: "右" };
   var CHEVRON = {
     push: { vb: "0 -6 120 142", w: 16, d: ["M14 54 L60 12 L106 54", "M14 90 L60 48 L106 90", "M14 126 L60 84 L106 126"] },
