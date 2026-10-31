@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>動作錄製</title>
+<style>
+  :root { --bg:#F4F5F7; --panel:#FFFFFF; --line:#D9DDE3; --text:#1B1E24; --muted:#4B5260; --accent:#1D4ED8; --on-accent:#FFFFFF; --accent-soft:#DCE6FB; --warn:#C2410C; --ok:#067647; --flash:#1D4ED8; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg:#14171C; --panel:#1E2229; --line:#333A44; --text:#E8EAEE; --muted:#A3ABB7; --accent:#7FA8FF; --on-accent:#0B1220; --accent-soft:#22304D; --warn:#FF9A6B; --ok:#6FD39A; --flash:#3F6FE0; } }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html, body { margin: 0; height: 100%; }
+  body { background: var(--bg); color: var(--text); font: 16px/1.5 -apple-system, "PingFang TC", "Noto Sans TC", system-ui, sans-serif; -webkit-user-select: none; user-select: none; }
+  main { min-height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 20px; padding: max(16px, env(safe-area-inset-top)) 16px max(16px, env(safe-area-inset-bottom)); text-align: center; }
+  section[hidden] { display: none !important; }
+  section { width: 100%; max-width: 560px; display: flex; flex-direction: column; align-items: center; gap: 16px; }
+  h1 { margin: 0; font-size: 26px; }
+  p { margin: 0; }
+  .muted { color: var(--muted); font-size: 15px; }
+  .status { min-height: 1.5em; font-size: 15px; }
+  .status.warn { color: var(--warn); }
+  .status.ok { color: var(--ok); }
+  button { font: inherit; font-weight: 700; min-height: 52px; padding: 0 22px; border-radius: 14px; border: 2px solid var(--line); background: var(--panel); color: var(--text); cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-size: 20px; min-width: 200px; min-height: 60px; }
+  button[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); }
+  .row { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; }
+  .stage { position: relative; width: min(72vw, 60vh, 300px); aspect-ratio: 1 / 1; display: flex; align-items: center; justify-content: center; border-radius: 50%; transition: background-color 120ms; }
+  .stage.cue { background: var(--flash); color: #FFFFFF; }
+  .stage svg.ring { position: absolute; inset: 0; width: 100%; height: 100%; transform: rotate(-90deg); }
+  .ring-bg { fill: none; stroke: var(--line); stroke-width: 10; }
+  .ring-fg { fill: none; stroke: var(--accent); stroke-width: 10; stroke-linecap: round; }
+  .stage.cue .ring-fg, .stage.cue .ring-bg { stroke: #FFFFFF; }
+  .icon { width: 46%; height: 46%; color: var(--accent); }
+  .stage.cue .icon { color: #FFFFFF; }
+  .count { position: absolute; bottom: 14%; font-size: 30px; font-weight: 800; font-variant-numeric: tabular-nums; }
+  .dots { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; max-width: 340px; }
+  .dot { width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--line); }
+  .dot.done { background: var(--accent); border-color: var(--accent); }
+  .dot.now { border-color: var(--accent); }
+  .bars { width: 100%; max-width: 320px; display: grid; grid-template-columns: auto 1fr; gap: 6px 10px; align-items: center; font-size: 14px; color: var(--muted); }
+  .bar { height: 10px; border-radius: 5px; background: var(--line); overflow: hidden; }
+  .bar > span { display: block; height: 100%; width: 0; background: var(--accent); }
+  .big-check { width: 96px; height: 96px; color: var(--ok); }
+  .hold { display: flex; align-items: center; gap: 10px; font-size: 15px; color: var(--muted); }
+  .hold svg { width: 44px; height: 44px; color: var(--muted); flex: none; }
+  .side { display: flex; flex-direction: column; align-items: center; gap: 12px; }
+  /* 橫拿手機：倒數圈在左、進度與按鈕在右，一屏放得下 */
+  @media (orientation: landscape) and (max-height: 520px) {
+    main { padding-top: max(8px, env(safe-area-inset-top)); padding-bottom: max(8px, env(safe-area-inset-bottom)); }
+    #run { flex-direction: row; justify-content: center; max-width: none; gap: 28px; }
+    #run .stage { width: min(82vh, 300px); }
+    #start, #done { gap: 10px; }
+  }
+</style>
+</head>
+<body>
+<main>
+
+<section id="start">
+  <h1>動作錄製</h1>
+  <div class="hold">
+    <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="13" width="40" height="22" rx="4"></rect><circle cx="35" cy="24" r="4"></circle></svg>
+    <span>像拿攝影機一樣橫拿，螢幕對著你</span>
+  </div>
+  <div class="row" role="group" aria-label="握法" id="grips">
+    <button type="button" data-grip="手持橫拿" aria-pressed="true">手持</button>
+    <button type="button" data-grip="夾在雲台" aria-pressed="false">夾雲台</button>
+    <button type="button" data-grip="Osmo 旁" aria-pressed="false">綁 Osmo</button>
+  </div>
+  <button type="button" class="primary" id="startBtn">開始</button>
+  <button type="button" id="resumeBtn" hidden>接續上次</button>
+  <p class="status" id="startStatus" aria-live="polite"></p>
+  <div class="bars" id="liveBars" hidden aria-hidden="true">
+    <span>移動</span><div class="bar"><span id="barAcc"></span></div>
+    <span>旋轉</span><div class="bar"><span id="barRot"></span></div>
+  </div>
+</section>
+
+<section id="run" hidden>
+  <div class="stage" id="stage">
+    <svg class="ring" viewBox="0 0 200 200" aria-hidden="true"><circle class="ring-bg" cx="100" cy="100" r="90"></circle><circle class="ring-fg" id="ring" cx="100" cy="100" r="90" stroke-dasharray="565.5" stroke-dashoffset="0"></circle></svg>
+    <svg class="icon" data-move="push" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" role="img" aria-label="往前推"><path d="M4 4l6 6M10 5v5H5M20 20l-6-6M14 19v-5h5"></path></svg>
+    <svg class="icon" data-move="pull" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" role="img" aria-label="往後拉" hidden><path d="M10 10L4 4M4 9V4h5M14 14l6 6M20 15v5h-5"></path></svg>
+    <svg class="icon" data-move="pan_left" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" role="img" aria-label="往左搖" hidden><path d="M20 12H4M10 6l-6 6 6 6"></path></svg>
+    <svg class="icon" data-move="pan_right" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" role="img" aria-label="往右搖" hidden><path d="M4 12h16M14 6l6 6-6 6"></path></svg>
+    <svg class="icon" data-move="still" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" role="img" aria-label="拿穩不動" hidden><circle cx="12" cy="12" r="3"></circle><path d="M12 3v4M12 17v4M3 12h4M17 12h4"></path></svg>
+    <span class="count" id="count" aria-live="off">3</span>
+  </div>
+  <div class="side">
+    <div class="dots" id="dots" aria-hidden="true"></div>
+    <p class="muted" id="runInfo" aria-live="polite"></p>
+    <div class="row">
+      <button type="button" id="pauseBtn">暫停</button>
+      <button type="button" id="redoBtn">重錄上一個</button>
+    </div>
+  </div>
+</section>
+
+<section id="done" hidden>
+  <svg class="big-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><path d="M7 12.5l3.2 3.2L17 9"></path></svg>
+  <h1 id="doneTitle">錄好了</h1>
+  <p class="muted" id="doneInfo"></p>
+  <div class="row">
+    <button type="button" class="primary" id="saveBtn">存檔</button>
+    <button type="button" id="shareBtn" hidden>分享</button>
+  </div>
+  <button type="button" id="againBtn">再錄一輪</button>
+  <p class="status" id="doneStatus" aria-live="polite"></p>
+</section>
+
+</main>
+<script src="js/recorder.js"></script>
+<script src="js/recorder_ui.js"></script>
+</body>
+</html>
